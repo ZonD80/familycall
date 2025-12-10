@@ -37,12 +37,12 @@ for PLATFORM in "${PLATFORMS[@]}"; do
     
     echo -e "${YELLOW}Building for $GOOS/$GOARCH...${NC}"
     
-    OUTPUT_NAME="familycall-server"
+    OUTPUT_NAME="familycall-server-${GOOS}-${GOARCH}"
     if [ "$GOOS" = "windows" ]; then
-        OUTPUT_NAME="familycall-server.exe"
+        OUTPUT_NAME="${OUTPUT_NAME}.exe"
     fi
     
-    OUTPUT_PATH="$BUILD_DIR/${OUTPUT_NAME}-${GOOS}-${GOARCH}"
+    OUTPUT_PATH="$BUILD_DIR/${OUTPUT_NAME}"
     
     env GOOS=$GOOS GOARCH=$GOARCH go build -o "$OUTPUT_PATH" .
     
