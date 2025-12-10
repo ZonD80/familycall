@@ -160,7 +160,7 @@ Family Callbook uses WebRTC (Web Real-Time Communication) for peer-to-peer video
 2. **Build the Server**
    ```bash
    cd server
-   go build -o familycall-server
+   ./build.sh
    ```
 
 3. **Make Binary Executable**
