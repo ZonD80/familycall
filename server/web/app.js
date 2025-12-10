@@ -8,6 +8,7 @@ let localStream = null;
 let currentCall = null;
 let audioOutputDevices = [];
 let currentAudioOutputId = 'default'; // 'default' for speaker, 'earpiece' or device ID
+let contactsRefreshInterval = null;
 
 // i18n Configuration
 let translations = {};
@@ -314,7 +315,9 @@ function setupEventListeners() {
     // Logout (in mobile menu)
     const mobileLogoutBtn = document.getElementById('mobile-logout-btn');
     if (mobileLogoutBtn) {
-        mobileLogoutBtn.addEventListener('click', () => {
+        mobileLogoutBtn.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
             closeMobileMenu();
             handleLogout();
         });
@@ -517,6 +520,9 @@ async function handleLogin(e) {
         showScreen('app-screen');
         const mobileUsernameEl = document.getElementById('mobile-current-username');
         if (mobileUsernameEl) mobileUsernameEl.textContent = currentUser.username;
+
+        // Check and show install prompt if available
+        checkAndShowPrompts();
 
         // Show/hide add contact button based on first user status
         const addContactBtn = document.getElementById('add-contact-btn');
@@ -2741,6 +2747,11 @@ function showScreen(screenId) {
         screen.classList.remove('active');
     });
     document.getElementById(screenId).classList.add('active');
+    
+    // Show install banner if app screen is shown
+    if (screenId === 'app-screen') {
+        showInstallBannerIfNeeded();
+    }
     console.log('Screen shown:', screenId);
 
     // Make local video draggable when call screen is shown
@@ -2855,29 +2866,37 @@ function handleLogout() {
 // Install prompt
 let deferredPrompt;
 
-window.addEventListener('beforeinstallprompt', (e) => {
-    e.preventDefault();
-    deferredPrompt = e;
-    document.getElementById('install-prompt').style.display = 'block';
-});
-
-function installApp() {
-    if (deferredPrompt) {
-        deferredPrompt.prompt();
-        deferredPrompt.userChoice.then((choiceResult) => {
-            if (choiceResult.outcome === 'accepted') {
-                console.log('User accepted the install prompt');
-            }
-            deferredPrompt = null;
-            document.getElementById('install-prompt').style.display = 'none';
-        });
-    }
-}
-
 function checkInstallPrompt() {
     if (window.matchMedia('(display-mode: standalone)').matches) {
         document.getElementById('install-prompt').style.display = 'none';
         document.getElementById('install-app-prompt').style.display = 'none';
+    }
+}
+
+// Show install banner if app screen is active and app is not installed
+function showInstallBannerIfNeeded() {
+    const isInstalled = window.matchMedia('(display-mode: standalone)').matches ||
+        window.navigator.standalone ||
+        document.referrer.includes('android-app://');
+    
+    const appScreen = document.getElementById('app-screen');
+    const isAppScreenActive = appScreen && appScreen.classList.contains('active');
+    
+    if (!isInstalled && !localStorage.getItem('install-prompt-dismissed') && isAppScreenActive) {
+        // Hide login screen prompt if visible
+        const loginPrompt = document.getElementById('install-prompt');
+        if (loginPrompt) loginPrompt.style.display = 'none';
+        // Show app screen prompt above contacts
+        const installBanner = document.getElementById('install-app-prompt');
+        if (installBanner) {
+            installBanner.style.display = 'block';
+        }
+    } else if (isInstalled || localStorage.getItem('install-prompt-dismissed')) {
+        // Hide banner if installed or dismissed
+        const installBanner = document.getElementById('install-app-prompt');
+        if (installBanner) {
+            installBanner.style.display = 'none';
+        }
     }
 }
 
@@ -2898,16 +2917,8 @@ function checkAndShowPrompts() {
         window.navigator.standalone ||
         document.referrer.includes('android-app://');
 
-    if (!isInstalled && !localStorage.getItem('install-prompt-dismissed')) {
-        // Check if beforeinstallprompt event already fired
-        if (deferredPrompt) {
-            console.log('Install prompt available, showing banner');
-            document.getElementById('install-app-prompt').style.display = 'block';
-        } else {
-            // Log PWA installability status
-            checkPWAInstallability();
-        }
-    }
+    // Show install banner (handled by showInstallBannerIfNeeded)
+    showInstallBannerIfNeeded();
 }
 
 // Check PWA installability criteria
@@ -2959,14 +2970,10 @@ async function checkPWAInstallability() {
 window.addEventListener('beforeinstallprompt', (e) => {
     e.preventDefault();
     deferredPrompt = e;
+    console.log('beforeinstallprompt event fired, deferredPrompt set');
 
-    // Show prompt on app screen if user is logged in
-    if (currentUser && document.getElementById('app-screen').classList.contains('active')) {
-        document.getElementById('install-app-prompt').style.display = 'block';
-    } else {
-        // Show on login screen
-        document.getElementById('install-prompt').style.display = 'block';
-    }
+    // Show banner if app screen is active
+    showInstallBannerIfNeeded();
 });
 
 // Enhanced install function
