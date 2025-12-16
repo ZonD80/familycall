@@ -1,5 +1,6 @@
 // API Configuration
-const API_BASE = '/api';
+// Use injected API_BASE if available (for backend-only mode), otherwise use relative path
+const API_BASE = (typeof window !== 'undefined' && window.API_BASE) || '/api';
 let authToken = localStorage.getItem('authToken');
 let currentUser = null;
 let wsConnection = null;
@@ -314,8 +315,18 @@ async function startCall(contactId, callType) {
 function connectWebSocket() {
     if (!authToken || !currentUser) return;
     
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws?user_id=${currentUser.id}`;
+    // Use frontend URI for WebSocket if in backend-only mode
+    let wsHost;
+    if (typeof window !== 'undefined' && window.API_BASE) {
+        // Extract host from API_BASE (e.g., 'https://domain.host/api' -> 'domain.host')
+        const apiBaseUrl = new URL(window.API_BASE.replace('/api', ''));
+        const protocol = apiBaseUrl.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsHost = `${protocol}//${apiBaseUrl.host}`;
+    } else {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsHost = `${protocol}//${window.location.host}`;
+    }
+    const wsUrl = `${wsHost}/ws?user_id=${currentUser.id}`;
     
     wsConnection = new WebSocket(wsUrl);
     

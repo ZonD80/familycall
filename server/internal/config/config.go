@@ -6,6 +6,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -22,6 +23,10 @@ type Config struct {
 	DatabasePath string
 	JWTSecret    string
 	VAPIDKeys    *VAPIDKeys
+	// Backend-only mode fields
+	BackendOnly  bool
+	BackendPort  string
+	FrontendURI  string
 }
 
 type VAPIDKeys struct {
@@ -30,20 +35,130 @@ type VAPIDKeys struct {
 	Subject    string
 }
 
-func Load() *Config {
-	cfg := &Config{
-		HTTPPort:     getEnv("HTTP_PORT", "80"),   // HTTP port for Let's Encrypt challenge
-		HTTPSPort:    getEnv("HTTPS_PORT", "443"), // HTTPS port
-		TURNPort:     getEnvInt("TURN_PORT", 3478),
-		TURNRealm:    getEnv("TURN_REALM", "familycall"),
-		DatabasePath: getEnv("DATABASE_PATH", "familycall.db"),
-		JWTSecret:    loadOrGenerateJWTSecret(),
+// LoadConfigFromJSON loads configuration from config.json file
+func LoadConfigFromJSON() (*Config, error) {
+	configPath := getConfigFilePath()
+	
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, err
 	}
 
-	// Load or prompt for domain
-	cfg.Domain = loadOrPromptDomain()
+	var cfg Config
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("failed to parse config.json: %w", err)
+	}
 
-	// Generate or load VAPID keys
+	return &cfg, nil
+}
+
+// SaveConfigToJSON saves configuration to config.json file
+func SaveConfigToJSON(cfg *Config) error {
+	configPath := getConfigFilePath()
+	
+	// Create a copy without sensitive data for JSON (VAPIDKeys are stored separately)
+	configToSave := struct {
+		HTTPPort     string `json:"http_port"`
+		HTTPSPort    string `json:"https_port"`
+		Domain       string `json:"domain"`
+		TURNPort     int    `json:"turn_port"`
+		TURNRealm    string `json:"turn_realm"`
+		DatabasePath string `json:"database_path"`
+		BackendOnly  bool   `json:"backend_only"`
+		BackendPort  string `json:"backend_port"`
+		FrontendURI  string `json:"frontend_uri"`
+	}{
+		HTTPPort:     cfg.HTTPPort,
+		HTTPSPort:    cfg.HTTPSPort,
+		Domain:       cfg.Domain,
+		TURNPort:     cfg.TURNPort,
+		TURNRealm:    cfg.TURNRealm,
+		DatabasePath: cfg.DatabasePath,
+		BackendOnly:  cfg.BackendOnly,
+		BackendPort:  cfg.BackendPort,
+		FrontendURI:  cfg.FrontendURI,
+	}
+
+	data, err := json.MarshalIndent(configToSave, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(configPath, data, 0600); err != nil {
+		return fmt.Errorf("failed to write config.json: %w", err)
+	}
+
+	return nil
+}
+
+func getConfigFilePath() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "config.json"
+	}
+	execDir := filepath.Dir(execPath)
+	return filepath.Join(execDir, "config.json")
+}
+
+// Load loads configuration from config.json (if exists) and overrides with command-line flags
+func Load(backendOnly *bool, backendPort *string, frontendURI *string) *Config {
+	var cfg *Config
+	var loadedFromFile bool
+
+	// Try to load from config.json
+	if savedCfg, err := LoadConfigFromJSON(); err == nil {
+		cfg = savedCfg
+		loadedFromFile = true
+		fmt.Println("NOTE: Custom configuration loaded from config.json")
+		// Apply defaults for missing fields
+		if cfg.HTTPPort == "" {
+			cfg.HTTPPort = getEnv("HTTP_PORT", "80")
+		}
+		if cfg.HTTPSPort == "" {
+			cfg.HTTPSPort = getEnv("HTTPS_PORT", "443")
+		}
+		if cfg.TURNPort == 0 {
+			cfg.TURNPort = getEnvInt("TURN_PORT", 3478)
+		}
+		if cfg.TURNRealm == "" {
+			cfg.TURNRealm = getEnv("TURN_REALM", "familycall")
+		}
+		if cfg.DatabasePath == "" {
+			cfg.DatabasePath = getEnv("DATABASE_PATH", "familycall.db")
+		}
+	} else {
+		// Initialize with defaults
+		cfg = &Config{
+			HTTPPort:     getEnv("HTTP_PORT", "80"),
+			HTTPSPort:    getEnv("HTTPS_PORT", "443"),
+			TURNPort:     getEnvInt("TURN_PORT", 3478),
+			TURNRealm:    getEnv("TURN_REALM", "familycall"),
+			DatabasePath: getEnv("DATABASE_PATH", "familycall.db"),
+		}
+	}
+
+	// Override with command-line flags if provided
+	if backendOnly != nil {
+		cfg.BackendOnly = *backendOnly
+	}
+	if backendPort != nil && *backendPort != "" {
+		cfg.BackendPort = *backendPort
+	}
+	if frontendURI != nil && *frontendURI != "" {
+		cfg.FrontendURI = *frontendURI
+	}
+
+	// Load JWT secret (always from file/env, not from config.json)
+	cfg.JWTSecret = loadOrGenerateJWTSecret()
+
+	// Load or prompt for domain (if not in backend-only mode or not loaded from file)
+	if !cfg.BackendOnly && (!loadedFromFile || cfg.Domain == "") {
+		cfg.Domain = loadOrPromptDomain()
+	} else if !loadedFromFile {
+		cfg.Domain = getEnv("DOMAIN", "localhost")
+	}
+
+	// Generate or load VAPID keys (always from file/env, not from config.json)
 	vapidKeys := loadVAPIDKeys()
 	cfg.VAPIDKeys = vapidKeys
 

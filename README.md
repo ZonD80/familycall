@@ -189,11 +189,61 @@ Family Callbook uses WebRTC (Web Real-Time Communication) for peer-to-peer video
    - Register as the first user (family organizer)
    - Start inviting family members!
 
+### Backend-Only Mode
+
+For deployments where SSL/TLS termination is handled by a reverse proxy (e.g., nginx, Traefik, Cloudflare), you can run the server in backend-only mode:
+
+```bash
+./familycall-server --backend-only --port 8080 --frontend-uri https://yourdomain.com
+```
+
+**Parameters:**
+- `--backend-only`: Enables backend-only mode (disables SSL/TLS and Let's Encrypt certificate management)
+- `--port` (required with `--backend-only`): HTTP port to bind to (e.g., `8080`)
+- `--frontend-uri` (required with `--backend-only`): Base URI of the frontend (e.g., `https://yourdomain.com`)
+
+**Features in backend-only mode:**
+- Server runs on HTTP only (no SSL/TLS)
+- Let's Encrypt certificate renewal is disabled
+- Frontend files are still served
+- API calls and WebSocket connections use the specified `frontend-uri`
+- CORS headers are configured to allow requests from `frontend-uri`
+
+**Configuration persistence:**
+- Configuration is automatically saved to `config.json` in the server directory when using command-line flags
+- On subsequent runs, configuration is loaded from `config.json` if it exists
+- Command-line flags override values from `config.json`
+- A notice is displayed when loading from `config.json`
+
+**Example deployment with nginx:**
+```nginx
+server {
+    listen 443 ssl;
+    server_name yourdomain.com;
+    
+    ssl_certificate /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+    
+    location / {
+        proxy_pass http://localhost:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        
+        # WebSocket support
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
 ### Environment Variables
 
-- `DOMAIN`: Your domain name (e.g., `family.example.com`)
-- `HTTP_PORT`: HTTP port for Let's Encrypt challenges (default: `80`)
-- `HTTPS_PORT`: HTTPS port (default: `443`)
+- `DOMAIN`: Your domain name (e.g., `family.example.com`) - not used in backend-only mode
+- `HTTP_PORT`: HTTP port for Let's Encrypt challenges (default: `80`) - not used in backend-only mode
+- `HTTPS_PORT`: HTTPS port (default: `443`) - not used in backend-only mode
 - `TURN_PORT`: TURN server UDP port (default: `3478`)
 - `TURN_REALM`: TURN server realm (default: `familycall`)
 - `DATABASE_PATH`: Path to SQLite database file (default: `familycall.db`)
@@ -217,6 +267,7 @@ Family Callbook uses WebRTC (Web Real-Time Communication) for peer-to-peer video
   - `translations/`: i18n translation files
 - `keys/`: Auto-generated keys directory (created at runtime)
 - `certs/`: Let's Encrypt certificates directory (created at runtime)
+- `config.json`: Server configuration file (created when using command-line flags)
 
 ## Usage Guide
 
@@ -252,6 +303,7 @@ The backup ZIP archive includes:
 - **Keys Directory** (`keys/`): JWT secret, VAPID public/private keys, and VAPID subject
 - **Certificates Directory** (`certs/`): Let's Encrypt SSL certificates and domain configuration
 - **Database File**: Complete SQLite database with all users, contacts, invites, and push subscriptions
+- **Configuration File** (`config.json`): Server configuration including backend-only mode settings (if present)
 
 ### Creating a Backup
 

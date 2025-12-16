@@ -50,6 +50,7 @@ func (h *Handlers) Backup(c *gin.Context) {
 	keysDir := h.getKeysDirectory()
 	certsDir := h.getCertsDirectory()
 	dbPath := h.config.DatabasePath
+	configPath := h.getConfigFilePath()
 
 	// Create temporary ZIP file
 	timestamp := time.Now().Format("20060102-150405")
@@ -142,6 +143,27 @@ func (h *Handlers) Backup(c *gin.Context) {
 
 		if _, err := io.Copy(dbFile, sourceDb); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to copy database to ZIP: %v", err)})
+			return
+		}
+	}
+
+	// Add config.json file if it exists
+	if _, err := os.Stat(configPath); err == nil {
+		configFile, err := zipWriter.Create("config.json")
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to create config.json entry in ZIP: %v", err)})
+			return
+		}
+
+		sourceConfig, err := os.Open(configPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to open config.json: %v", err)})
+			return
+		}
+		defer sourceConfig.Close()
+
+		if _, err := io.Copy(configFile, sourceConfig); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to copy config.json to ZIP: %v", err)})
 			return
 		}
 	}
@@ -254,6 +276,7 @@ func (h *Handlers) Restore(c *gin.Context) {
 	keysDir := h.getKeysDirectory()
 	certsDir := h.getCertsDirectory()
 	dbPath := h.config.DatabasePath
+	configPath := h.getConfigFilePath()
 
 	// Extract files
 	for _, f := range zipReader.File {
@@ -304,6 +327,14 @@ func (h *Handlers) Restore(c *gin.Context) {
 				return
 			}
 		}
+
+		// Extract config.json
+		if f.Name == "config.json" {
+			if err := extractFile(f, configPath); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to extract config.json: %v", err)})
+				return
+			}
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -338,8 +369,8 @@ func extractFile(f *zip.File, targetPath string) error {
 		return err
 	}
 
-	// Set permissions (0600 for keys/certs, 0644 for database)
-	if strings.Contains(targetPath, "keys") || strings.Contains(targetPath, "certs") {
+	// Set permissions (0600 for keys/certs/config.json, 0644 for database)
+	if strings.Contains(targetPath, "keys") || strings.Contains(targetPath, "certs") || strings.HasSuffix(targetPath, "config.json") {
 		return os.Chmod(targetPath, 0600)
 	}
 	return os.Chmod(targetPath, 0644)
@@ -363,5 +394,15 @@ func (h *Handlers) getCertsDirectory() string {
 	}
 	execDir := filepath.Dir(execPath)
 	return filepath.Join(execDir, "certs")
+}
+
+// getConfigFilePath returns the config.json file path
+func (h *Handlers) getConfigFilePath() string {
+	execPath, err := os.Executable()
+	if err != nil {
+		return "config.json"
+	}
+	execDir := filepath.Dir(execPath)
+	return filepath.Join(execDir, "config.json")
 }
 

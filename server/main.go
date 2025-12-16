@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"embed"
+	"flag"
 	"fmt"
 	"io"
 	"io/fs"
@@ -37,11 +38,38 @@ var translationsFS embed.FS
 var buildTimestamp = time.Now().Unix()
 
 func main() {
+	// Parse command-line flags
+	backendOnly := flag.Bool("backend-only", false, "Run in backend-only mode (disable SSL/LE, use HTTP)")
+	backendPort := flag.String("port", "", "HTTP port for backend-only mode (required with --backend-only)")
+	frontendURI := flag.String("frontend-uri", "", "Frontend URI base (e.g., https://domain.host) (required with --backend-only)")
+	flag.Parse()
+
+	// Validate flags
+	if *backendOnly {
+		if *backendPort == "" {
+			log.Fatal("Error: --port is required when --backend-only is specified")
+		}
+		if *frontendURI == "" {
+			log.Fatal("Error: --frontend-uri is required when --backend-only is specified")
+		}
+		// Normalize frontend URI (remove trailing slash)
+		*frontendURI = strings.TrimSuffix(*frontendURI, "/")
+	}
+
 	// Log version and build info
 	log.Printf("Family Callbook Server v%s (build: %d)", AppVersion, buildTimestamp)
 
-	// Load configuration
-	cfg := config.Load()
+	// Load configuration (from config.json if exists, override with flags)
+	cfg := config.Load(backendOnly, backendPort, frontendURI)
+
+	// Save config.json if flags were provided
+	if *backendOnly || (*backendPort != "" || *frontendURI != "") {
+		if err := config.SaveConfigToJSON(cfg); err != nil {
+			log.Printf("Warning: Failed to save config.json: %v", err)
+		} else {
+			log.Printf("Configuration saved to config.json")
+		}
+	}
 
 	// Initialize database
 	db, err := database.Initialize(cfg.DatabasePath)
@@ -68,7 +96,7 @@ func main() {
 	// Setup router
 	router := setupRouter(h, cfg)
 
-	// Setup HTTPS with Let's Encrypt
+	// Setup server (HTTPS with Let's Encrypt or HTTP for backend-only)
 	startHTTPServer(router, cfg)
 }
 
@@ -81,7 +109,12 @@ func setupRouter(h *handlers.Handlers, cfg *config.Config) *gin.Engine {
 
 	// CORS middleware (for web app)
 	router.Use(func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
+		// Use frontend URI for CORS if in backend-only mode, otherwise allow all
+		origin := "*"
+		if cfg.BackendOnly && cfg.FrontendURI != "" {
+			origin = cfg.FrontendURI
+		}
+		c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
 		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE")
@@ -172,26 +205,26 @@ func setupRouter(h *handlers.Handlers, cfg *config.Config) *gin.Engine {
 
 	// Public invite page route (for sharing invite links)
 	router.GET("/invite/:uuid", func(c *gin.Context) {
-		serveIndexHTML(c)
+		serveIndexHTML(c, cfg)
 	})
 
 	router.GET("/call", func(c *gin.Context) {
-		serveIndexHTML(c)
+		serveIndexHTML(c, cfg)
 	})
 
 	// Root route
 	router.GET("/", func(c *gin.Context) {
-		serveIndexHTML(c)
+		serveIndexHTML(c, cfg)
 	})
 
 	// Serve static files (PWA)
-	router.NoRoute(serveStaticFiles())
+	router.NoRoute(serveStaticFiles(cfg))
 
 	return router
 }
 
 // serveIndexHTML serves index.html with versioned script tags
-func serveIndexHTML(c *gin.Context) {
+func serveIndexHTML(c *gin.Context, cfg *config.Config) {
 	fsys, _ := fs.Sub(staticFiles, "web")
 	indexFile, err := fsys.Open("index.html")
 	if err != nil {
@@ -216,6 +249,16 @@ func serveIndexHTML(c *gin.Context) {
 	htmlStr = strings.ReplaceAll(htmlStr, `href="/styles.css"`, fmt.Sprintf(`href="/styles.css?v=%s"`, version))
 	htmlStr = strings.ReplaceAll(htmlStr, `href="/service-worker.js"`, fmt.Sprintf(`href="/service-worker.js?v=%s"`, version))
 
+	// Inject frontend URI as API base if in backend-only mode
+	if cfg.BackendOnly && cfg.FrontendURI != "" {
+		// Inject API_BASE constant before the first script tag
+		apiBaseScript := fmt.Sprintf(`<script>window.API_BASE = '%s/api';</script>`, cfg.FrontendURI)
+		// Find the first script tag and inject before it
+		if idx := strings.Index(htmlStr, "<script"); idx != -1 {
+			htmlStr = htmlStr[:idx] + apiBaseScript + "\n" + htmlStr[idx:]
+		}
+	}
+
 	// Inject version into HTML for display
 	htmlStr = strings.ReplaceAll(htmlStr, `<h2>Family Callbook</h2>`, fmt.Sprintf(`<h2>Family Callbook</h2><p class="app-version">v%s</p>`, AppVersion))
 	htmlStr = strings.ReplaceAll(htmlStr, `<h1>Family Callbook</h1>`, fmt.Sprintf(`<h1>Family Callbook</h1><p class="app-version">v%s</p>`, AppVersion))
@@ -228,7 +271,7 @@ func serveIndexHTML(c *gin.Context) {
 }
 
 // serveStaticFiles serves embedded static files
-func serveStaticFiles() gin.HandlerFunc {
+func serveStaticFiles(cfg *config.Config) gin.HandlerFunc {
 	// Get the subdirectory
 	fsys, err := fs.Sub(staticFiles, "web")
 	if err != nil {
@@ -253,13 +296,13 @@ func serveStaticFiles() gin.HandlerFunc {
 		_, err := fsys.Open(path)
 		if err != nil {
 			// File doesn't exist, serve index.html for SPA routing
-			serveIndexHTML(c)
+			serveIndexHTML(c, cfg)
 			return
 		}
 
 		// If serving index.html, use versioned version
 		if path == "index.html" {
-			serveIndexHTML(c)
+			serveIndexHTML(c, cfg)
 			return
 		}
 
@@ -293,6 +336,28 @@ func serveStaticFiles() gin.HandlerFunc {
 }
 
 func startHTTPServer(router *gin.Engine, cfg *config.Config) {
+	// Backend-only mode: simple HTTP server
+	if cfg.BackendOnly {
+		httpServer := &http.Server{
+			Addr:         ":" + cfg.BackendPort,
+			Handler:      router,
+			ReadTimeout:  15 * time.Second,
+			WriteTimeout: 15 * time.Second,
+			IdleTimeout:  60 * time.Second,
+		}
+
+		log.Printf("Backend-only mode: HTTP server starting on port %s", cfg.BackendPort)
+		log.Printf("Frontend URI: %s", cfg.FrontendURI)
+		log.Printf("SSL/TLS and Let's Encrypt certificate management disabled")
+		log.Printf("API calls will use: %s/api", cfg.FrontendURI)
+
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Failed to start HTTP server: %v", err)
+		}
+		return
+	}
+
+	// Normal mode: HTTPS with Let's Encrypt
 	// Get certs directory
 	certsDir := getCertsDirectory()
 	if err := os.MkdirAll(certsDir, 0700); err != nil {
