@@ -12,6 +12,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/SherClockHolmes/webpush-go"
 	"gorm.io/gorm"
+	"io"
 )
 
 type PushSubscribeKeys struct {
@@ -279,16 +280,34 @@ func (h *Handlers) SendPushNotification(userID string, title string, body string
 			continue
 		}
 		
-		log.Printf("[PUSH] Successfully sent notification to subscription %d: status=%d", i+1, resp.StatusCode)
-		successCount++
-		
-		// If status indicates subscription is invalid, delete it
-		if resp.StatusCode == 410 || resp.StatusCode == 404 {
-			log.Printf("[PUSH] Subscription %d returned status %d (invalid), deleting", i+1, resp.StatusCode)
-			h.db.Delete(&sub)
-		}
-		
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
+
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		    log.Printf(
+			"[PUSH] Notification %d rejected: HTTP %d, body=%q, readErr=%v",
+			i+1,
+			resp.StatusCode,
+			string(body),
+			readErr,
+		    )
+
+		    failCount++
+
+		    if resp.StatusCode == 404 || resp.StatusCode == 410 {
+			log.Printf("[PUSH] Deleting expired subscription %d", i+1)
+			h.db.Delete(&sub)
+		    }
+
+		    continue
+		}
+
+		log.Printf(
+		    "[PUSH] Notification %d accepted: HTTP %d",
+		    i+1,
+		    resp.StatusCode,
+		)
+		successCount++
 	}
 
 	log.Printf("[PUSH] Push notification summary for user %s: %d succeeded, %d failed", userID, successCount, failCount)
