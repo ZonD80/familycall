@@ -231,7 +231,7 @@ func loadVAPIDKeys() *VAPIDKeys {
 		return &VAPIDKeys{
 			PublicKey:  publicKey,
 			PrivateKey: privateKey,
-			Subject:    getEnv("VAPID_SUBJECT", "mailto:admin@familycall.app"),
+			Subject:    getEnv("VAPID_SUBJECT", "admin@familycall.app"),
 		}
 	}
 
@@ -263,7 +263,7 @@ func loadVAPIDKeys() *VAPIDKeys {
 					if subjectData, err := os.ReadFile(subjectFile); err == nil {
 						subject = string(subjectData)
 					} else {
-						subject = getEnv("VAPID_SUBJECT", "mailto:admin@familycall.app")
+						subject = getEnv("VAPID_SUBJECT", "admin@familycall.app")
 					}
 
 					return &VAPIDKeys{
@@ -314,7 +314,7 @@ func loadVAPIDKeys() *VAPIDKeys {
 	// This matches the format returned by webpush.GenerateVAPIDKeys()
 	privateKeyBase64 := base64.RawURLEncoding.EncodeToString(privateKeyBytes)
 
-	subject = getEnv("VAPID_SUBJECT", "mailto:admin@familycall.app")
+	subject = getEnv("VAPID_SUBJECT", "admin@familycall.app")
 
 	// Save keys to files
 	if err := saveVAPIDKeys(keysDir, uncompressedPublicKey, privateKeyBase64, subject); err != nil {
