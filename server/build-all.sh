@@ -6,6 +6,7 @@
 set -e
 
 # Colors for output
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 YELLOW='\033[1;33m'
@@ -44,12 +45,11 @@ for PLATFORM in "${PLATFORMS[@]}"; do
     
     OUTPUT_PATH="$BUILD_DIR/${OUTPUT_NAME}"
     
-    env GOOS=$GOOS GOARCH=$GOARCH go build -o "$OUTPUT_PATH" .
-    
-    if [ $? -eq 0 ]; then
+    if env GOOS=$GOOS GOARCH=$GOARCH go build -o "$OUTPUT_PATH" .; then
         echo -e "${GREEN}✓ Built: $OUTPUT_PATH${NC}"
     else
         echo -e "${RED}✗ Failed to build for $GOOS/$GOARCH${NC}"
+        exit 1
     fi
 done
 

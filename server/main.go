@@ -26,7 +26,7 @@ import (
 	"golang.org/x/crypto/acme/autocert"
 )
 
-const AppVersion = "1.0.0"
+const AppVersion = "1.0.5"
 
 //go:embed web/*
 var staticFiles embed.FS
