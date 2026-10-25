@@ -10,6 +10,13 @@ let audioOutputDevices = [];
 let currentAudioOutputId = 'default'; // 'default' for speaker, 'earpiece' or device ID
 let contactsRefreshInterval = null;
 
+// Incoming call prompt ("ask before answering")
+const RING_TIMEOUT_MS = 45000; // Unanswered calls are dropped after this period
+const ASK_BEFORE_ANSWER_KEY = 'askBeforeAnswer';
+let ringTimeout = null; // Timer for the current ringing (incoming) or outgoing call
+let ringtone = null; // { context, interval } while the ringtone plays
+let autoAnswerCallerId = null; // Caller whose push notification was tapped (tap = answer)
+
 // i18n Configuration
 let translations = {};
 let currentLang = 'en';
@@ -82,6 +89,11 @@ function applyTranslations() {
     document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
         const key = el.getAttribute('data-i18n-placeholder');
         el.placeholder = t(key);
+    });
+
+    // Update elements with data-i18n-title
+    document.querySelectorAll('[data-i18n-title]').forEach(el => {
+        el.title = t(el.getAttribute('data-i18n-title'));
     });
 
     // Update language switcher
@@ -208,6 +220,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const callType = urlParams.get('call_type');
 
     if (callerId && callerName && callType) {
+        // Tapping the notification already means "answer", so don't prompt again
+        autoAnswerCallerId = callerId;
         // Store call info to handle after auth
         sessionStorage.setItem('pendingCall', JSON.stringify({
             caller_id: callerId,
@@ -320,6 +334,15 @@ function setupEventListeners() {
             e.stopPropagation();
             closeMobileMenu();
             handleLogout();
+        });
+    }
+
+    // Ask before answering (per device)
+    const askBeforeAnswerToggle = document.getElementById('ask-before-answer-toggle');
+    if (askBeforeAnswerToggle) {
+        askBeforeAnswerToggle.checked = isAskBeforeAnswerEnabled();
+        askBeforeAnswerToggle.addEventListener('change', (e) => {
+            setAskBeforeAnswer(e.target.checked);
         });
     }
 
@@ -1208,6 +1231,18 @@ async function initiateCall(contactUserId, contactUserIdDup, callType, contactNa
             waitingForConnection: true
         };
 
+        // Give up if the receiver doesn't answer in time
+        clearTimeout(ringTimeout);
+        ringTimeout = setTimeout(() => {
+            if (currentCall && currentCall.waitingForConnection) {
+                console.log('[CALL] No answer, ending call');
+                updateCallStatus(t('no_answer'));
+                setTimeout(() => {
+                    endCall();
+                }, 2000);
+            }
+        }, RING_TIMEOUT_MS);
+
         // Wait a bit, then check if receiver is online
         setTimeout(() => {
             if (currentCall && currentCall.waitingForConnection) {
@@ -1406,12 +1441,14 @@ function connectWebSocket() {
     if (!authToken || !currentUser) return;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/ws?user_id=${currentUser.id}`;
+    const wsUrl = `${protocol}//${window.location.host}/ws`;
 
     wsConnection = new WebSocket(wsUrl);
 
     wsConnection.onopen = () => {
         console.log('WebSocket connected');
+        // Authenticate first - the server identifies us by the token, not by any ID we claim
+        wsConnection.send(JSON.stringify({ type: 'auth', token: authToken }));
         // Send a message immediately to update LastActivity
         // This ensures we're marked as online right away
         sendWebSocketMessage({
@@ -1448,8 +1485,13 @@ function connectWebSocket() {
         console.error('WebSocket error:', error);
     };
 
-    wsConnection.onclose = () => {
+    wsConnection.onclose = (event) => {
         console.log('WebSocket disconnected');
+        if (event && event.code === 1008) {
+            // Token rejected - reconnecting with the same token would fail again
+            console.error('WebSocket authentication rejected');
+            return;
+        }
         // Reconnect after 3 seconds
         setTimeout(connectWebSocket, 3000);
     };
@@ -1490,6 +1532,8 @@ function handleWebSocketMessage(message) {
                 console.log('[WS] Receiver accepted, starting WebRTC call...');
                 if (currentCall.waitingForConnection) {
                     currentCall.waitingForConnection = false;
+                    clearTimeout(ringTimeout);
+                    ringTimeout = null;
                     updateCallStatus(t('receiver_connected'));
                     // Start the WebRTC call
                     startCall(currentCall.contactId, currentCall.callType).catch(error => {
@@ -1501,7 +1545,17 @@ function handleWebSocketMessage(message) {
             break;
         case 'call-reject':
             console.log('[WS] Call rejected by:', message.from);
-            endCall();
+            if (currentCall && currentCall.contactId === message.from) {
+                clearTimeout(ringTimeout);
+                ringTimeout = null;
+                const busy = message.data && message.data.reason === 'busy';
+                updateCallStatus(t(busy ? 'contact_busy' : 'call_declined'));
+                setTimeout(() => {
+                    if (currentCall && currentCall.contactId === message.from) {
+                        endCall({ notifyPeer: false });
+                    }
+                }, 2000);
+            }
             break;
         case 'call-end':
             console.log('[WS] Call ended by:', message.from);
@@ -1543,28 +1597,160 @@ function handleWebSocketMessage(message) {
 
 // Handle incoming call
 async function handleIncomingCall(message) {
-    console.log('Incoming call from:', message.data.caller_username);
+    const callerName = message.data && message.data.caller_username;
+    console.log('Incoming call from:', callerName);
+
+    if (currentCall) {
+        if (currentCall.contactId === message.from) {
+            // Duplicate call-request (e.g. resent pending call) - keep the current screen
+            console.log('Ignoring duplicate call-request from:', message.from);
+            return;
+        }
+        // Already in another call
+        console.log('Busy, rejecting call from:', message.from);
+        sendWebSocketMessage({
+            type: 'call-reject',
+            to: message.from,
+            data: { reason: 'busy' }
+        });
+        return;
+    }
 
     // Show call screen immediately
     currentCall = {
         contactId: message.from,
         callType: message.call_type
     };
-    updateCallContactName(message.data.caller_username);
+    updateCallContactName(callerName);
     updateCallStatus(t('incoming_call'));
     showScreen('call-screen');
 
+    const answeredFromNotification = autoAnswerCallerId === message.from;
+    autoAnswerCallerId = null;
+
+    if (isAskBeforeAnswerEnabled() && !answeredFromNotification) {
+        // Ring and wait for the user to accept or reject
+        currentCall.ringing = true;
+        setIncomingCallControlsVisible(true);
+        startRingtone();
+        clearTimeout(ringTimeout);
+        ringTimeout = setTimeout(() => {
+            if (currentCall && currentCall.ringing && currentCall.contactId === message.from) {
+                console.log('Incoming call not answered, dismissing');
+                rejectIncomingCall();
+            }
+        }, RING_TIMEOUT_MS);
+        return;
+    }
+
     // Auto-accept call
     console.log('Auto-accepting call...');
+    acceptIncomingCall();
+}
+
+// Accept the ringing (or auto-accepted) incoming call
+function acceptIncomingCall() {
+    if (!currentCall) return;
+
+    currentCall.ringing = false;
+    clearTimeout(ringTimeout);
+    ringTimeout = null;
+    stopRingtone();
+    setIncomingCallControlsVisible(false);
 
     // Send call-accept message
     sendWebSocketMessage({
         type: 'call-accept',
-        to: message.from
+        to: currentCall.contactId
     });
 
     // Wait for offer
     updateCallStatus(t('waiting_for_offer'));
+}
+
+// Reject the ringing incoming call
+function rejectIncomingCall() {
+    if (!currentCall || !currentCall.ringing) return;
+
+    sendWebSocketMessage({
+        type: 'call-reject',
+        to: currentCall.contactId
+    });
+    endCall({ notifyPeer: false });
+}
+
+function isAskBeforeAnswerEnabled() {
+    try {
+        return localStorage.getItem(ASK_BEFORE_ANSWER_KEY) === 'true';
+    } catch (error) {
+        return false;
+    }
+}
+
+function setAskBeforeAnswer(enabled) {
+    try {
+        localStorage.setItem(ASK_BEFORE_ANSWER_KEY, enabled ? 'true' : 'false');
+    } catch (error) {
+        console.error('Failed to save ask-before-answer setting:', error);
+    }
+}
+
+function setIncomingCallControlsVisible(visible) {
+    const container = document.querySelector('.call-container');
+    if (container) {
+        container.classList.toggle('ringing', visible);
+    }
+}
+
+// Play a simple ring pattern; falls back to vibration where audio is blocked
+function startRingtone() {
+    stopRingtone();
+
+    const ring = () => {
+        if (navigator.vibrate) {
+            navigator.vibrate([400, 200, 400]);
+        }
+        if (!ringtone || !ringtone.context) return;
+        const ctx = ringtone.context;
+        [0, 0.5].forEach(offset => {
+            const osc = ctx.createOscillator();
+            const gain = ctx.createGain();
+            osc.frequency.value = 440;
+            gain.gain.value = 0.2;
+            osc.connect(gain);
+            gain.connect(ctx.destination);
+            osc.start(ctx.currentTime + offset);
+            osc.stop(ctx.currentTime + offset + 0.4);
+        });
+    };
+
+    let context = null;
+    try {
+        const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+        if (AudioContextClass) {
+            context = new AudioContextClass();
+            if (context.state === 'suspended') {
+                context.resume().catch(() => { });
+            }
+        }
+    } catch (error) {
+        console.warn('Ringtone audio unavailable:', error);
+    }
+
+    ringtone = { context, interval: setInterval(ring, 3000) };
+    ring();
+}
+
+function stopRingtone() {
+    if (!ringtone) return;
+    clearInterval(ringtone.interval);
+    if (ringtone.context && ringtone.context.close) {
+        ringtone.context.close().catch(() => { });
+    }
+    if (navigator.vibrate) {
+        navigator.vibrate(0);
+    }
+    ringtone = null;
 }
 
 // Handle offer
@@ -1573,6 +1759,16 @@ async function handleOffer(message) {
         console.log('[OFFER] Handling offer from:', message.from, 'call_type:', message.call_type);
         console.log('[OFFER] Offer data:', message.data);
         console.log('[OFFER] Current call state:', currentCall);
+
+        // Never start media for a call the user hasn't accepted
+        if (currentCall && currentCall.ringing) {
+            console.log('[OFFER] Ignoring offer, incoming call not accepted yet');
+            return;
+        }
+        if (!currentCall && isAskBeforeAnswerEnabled()) {
+            console.log('[OFFER] Ignoring unsolicited offer, ask-before-answer is enabled');
+            return;
+        }
 
         // If we don't have currentCall set, this might be an incoming call
         // Set it up so we can handle the offer
@@ -2008,9 +2204,15 @@ function makeLocalVideoDraggable() {
 }
 
 // End call
-function endCall() {
+function endCall(options = {}) {
+    clearTimeout(ringTimeout);
+    ringTimeout = null;
+    stopRingtone();
+    setIncomingCallControlsVisible(false);
+
     // Notify the other party that the call is ending
-    if (currentCall && currentCall.contactId && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
+    const notifyPeer = options.notifyPeer !== false;
+    if (notifyPeer && currentCall && currentCall.contactId && wsConnection && wsConnection.readyState === WebSocket.OPEN) {
         console.log('Sending call-end message to:', currentCall.contactId);
         sendWebSocketMessage({
             type: 'call-end',
@@ -2261,7 +2463,9 @@ function updateAudioOutputButton() {
 
 // Setup call controls
 document.addEventListener('DOMContentLoaded', () => {
-    document.getElementById('end-call-btn').addEventListener('click', endCall);
+    document.getElementById('end-call-btn').addEventListener('click', () => endCall());
+    document.getElementById('accept-call-btn').addEventListener('click', acceptIncomingCall);
+    document.getElementById('reject-call-btn').addEventListener('click', rejectIncomingCall);
 
     document.getElementById('mute-btn').addEventListener('click', () => {
         if (localStream) {
@@ -2710,6 +2914,9 @@ function handleCallFromNotification(callData) {
 
     // Store expected caller ID to match when call-request arrives
     const expectedCallerId = callData.caller_id;
+    if (!currentCall) {
+        autoAnswerCallerId = expectedCallerId;
+    }
 
     // Wait for call-request to arrive (handleIncomingCall will be called automatically)
     const checkInterval = setInterval(() => {
@@ -2723,6 +2930,10 @@ function handleCallFromNotification(callData) {
     // Timeout after 10 seconds if call-request doesn't arrive
     setTimeout(() => {
         clearInterval(checkInterval);
+        if (autoAnswerCallerId === expectedCallerId) {
+            // Don't auto-answer a later call from this caller
+            autoAnswerCallerId = null;
+        }
         if (!currentCall || currentCall.contactId !== expectedCallerId) {
             console.log('Call-request timeout - caller may have disconnected');
             updateCallStatus(t('call_may_have_ended'));

@@ -90,5 +90,11 @@
   "restore_success": "Backup restored successfully. Please restart the server.",
   "restore_failed": "Failed to restore backup",
   "select_backup_file": "Select backup file",
-  "backup_restore_only_organizer": "Only the family organizer can backup/restore"
+  "backup_restore_only_organizer": "Only the family organizer can backup/restore",
+  "ask_before_answering": "Ask before answering calls",
+  "accept": "Accept",
+  "reject": "Reject",
+  "no_answer": "No answer",
+  "call_declined": "Call declined",
+  "contact_busy": "Contact is busy"
 }

@@ -176,6 +176,9 @@ func (h *Handlers) DeleteContact(c *gin.Context) {
 		return
 	}
 
+	// Their token is no longer accepted; also drop a connection that is already open
+	h.hub.DisconnectUser(user.ID)
+
 	c.JSON(http.StatusOK, gin.H{"message": "Contact deleted"})
 }
 

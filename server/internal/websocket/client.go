@@ -47,6 +47,7 @@ func (c *Client) ReadPump() {
 		c.Conn.Close()
 	}()
 
+	c.Conn.SetReadLimit(maxMessageSize)
 	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.Conn.SetPongHandler(func(string) error {
 		c.LastActivity = time.Now()
@@ -65,10 +66,27 @@ func (c *Client) ReadPump() {
 
 		// Update last activity
 		c.LastActivity = time.Now()
-		
+
+		// Never trust the sender ID supplied by the client
+		message, err = stampSender(message, c.UserID)
+		if err != nil {
+			log.Printf("Dropping malformed message from %s: %v", c.UserID, err)
+			continue
+		}
+
 		// Broadcast message to hub
 		c.Hub.Broadcast <- message
 	}
+}
+
+// stampSender sets the message's From field to the authenticated user ID
+func stampSender(message []byte, userID string) ([]byte, error) {
+	var msg Message
+	if err := json.Unmarshal(message, &msg); err != nil {
+		return nil, err
+	}
+	msg.From = userID
+	return EncodeMessage(msg)
 }
 
 // WritePump pumps messages from the hub to the websocket connection

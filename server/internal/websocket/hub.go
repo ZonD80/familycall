@@ -5,6 +5,8 @@ import (
 	"log"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Hub maintains the set of active clients and broadcasts messages to clients
@@ -22,8 +24,20 @@ type Hub struct {
 	// Inbound messages from clients
 	Broadcast chan []byte
 
-	// Pending call requests for offline users (userID -> []Message)
-	pendingCalls map[string][]Message
+	// Pending call requests for offline users (userID -> []pendingCall)
+	pendingCalls map[string][]pendingCall
+
+	// Clock, overridable in tests
+	now func() time.Time
+}
+
+// PendingCallTTL is how long a call-request for an offline user stays valid.
+// It should outlive the caller's ring timeout so the call can still be answered.
+const PendingCallTTL = 60 * time.Second
+
+type pendingCall struct {
+	msg      Message
+	storedAt time.Time
 }
 
 // Message represents a WebRTC signaling message
@@ -41,7 +55,8 @@ func NewHub() *Hub {
 		Register:     make(chan *Client),
 		Unregister:   make(chan *Client),
 		Broadcast:    make(chan []byte),
-		pendingCalls: make(map[string][]Message),
+		pendingCalls: make(map[string][]pendingCall),
+		now:          time.Now,
 	}
 }
 
@@ -114,11 +129,15 @@ func (h *Hub) Run() {
 			}
 			h.clientsMutex.RUnlock()
 			
-			// Check for pending calls and resend them
+			// Check for pending calls and resend the ones that haven't expired
 			if pendingCalls, ok := h.pendingCalls[client.UserID]; ok && len(pendingCalls) > 0 {
 				log.Printf("Resending %d pending call(s) to user %s", len(pendingCalls), client.UserID)
-				for _, pendingMsg := range pendingCalls {
-					messageBytes, err := EncodeMessage(pendingMsg)
+				for _, pending := range pendingCalls {
+					if h.now().Sub(pending.storedAt) > PendingCallTTL {
+						log.Printf("Dropping expired pending call-request from %s to %s", pending.msg.From, client.UserID)
+						continue
+					}
+					messageBytes, err := EncodeMessage(pending.msg)
 					if err == nil {
 						select {
 						case client.Send <- messageBytes:
@@ -196,14 +215,51 @@ func (h *Hub) Run() {
 				log.Printf("WARNING: Target client %s not found. Available clients: %v", msg.To, clientIDs)
 				// If it's a call-request and user is offline, store it for when they come online
 				if msg.Type == "call-request" {
-					if h.pendingCalls[msg.To] == nil {
-						h.pendingCalls[msg.To] = make([]Message, 0)
-					}
-					h.pendingCalls[msg.To] = append(h.pendingCalls[msg.To], msg)
+					// Keep only the latest request from each caller
+					h.removePendingCall(msg.To, msg.From)
+					h.pendingCalls[msg.To] = append(h.pendingCalls[msg.To], pendingCall{msg: msg, storedAt: h.now()})
 					log.Printf("Stored pending call-request for offline user %s (total pending: %d)", msg.To, len(h.pendingCalls[msg.To]))
 				}
+			}
+
+			// Caller hung up or gave up - the call must not ring later
+			if msg.Type == "call-end" {
+				h.removePendingCall(msg.To, msg.From)
 			}
 		}
 	}
 }
 
+// removePendingCall drops pending call-requests from caller to callee
+func (h *Hub) removePendingCall(callee, caller string) {
+	pending := h.pendingCalls[callee]
+	kept := pending[:0]
+	for _, p := range pending {
+		if p.msg.From != caller {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		delete(h.pendingCalls, callee)
+	} else {
+		h.pendingCalls[callee] = kept
+	}
+}
+
+// DisconnectUser closes the user's WebSocket connection, if any.
+// The client sees a policy-violation close and does not reconnect.
+func (h *Hub) DisconnectUser(userID string) {
+	h.clientsMutex.RLock()
+	client, ok := h.clients[userID]
+	h.clientsMutex.RUnlock()
+	if !ok || client.Conn == nil {
+		return
+	}
+
+	log.Printf("Disconnecting user %s", userID)
+	client.Conn.WriteControl(websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, "unauthorized"),
+		time.Now().Add(time.Second))
+	// Closing the connection makes ReadPump unregister the client
+	client.Conn.Close()
+}

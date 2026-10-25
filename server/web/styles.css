@@ -646,6 +646,49 @@ main {
     background: var(--error);
 }
 
+/* Incoming call (ask before answering) */
+.incoming-call-controls {
+    display: none;
+    justify-content: center;
+    gap: 4rem;
+    padding: 2rem;
+    background: rgba(0, 0, 0, 0.8);
+}
+
+.call-container.ringing .incoming-call-controls {
+    display: flex;
+}
+
+.call-container.ringing .call-controls {
+    display: none;
+}
+
+.incoming-call-controls .call-btn {
+    width: 72px;
+    height: 72px;
+}
+
+.call-btn.accept-call {
+    background: #4CAF50;
+}
+
+.call-container.ringing .call-btn.accept-call {
+    animation: ring-pulse 1.2s ease-in-out infinite;
+}
+
+.call-container.ringing .call-info {
+    top: 40%;
+    left: 0;
+    right: 0;
+    text-align: center;
+    font-size: 1.5rem;
+}
+
+@keyframes ring-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.12); }
+}
+
 .call-info {
     position: absolute;
     top: 10px;
@@ -829,6 +872,14 @@ main {
 
 .mobile-menu-item .btn {
     width: 100%;
+}
+
+.mobile-menu-item .toggle-row {
+    flex-direction: row;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
 }
 
 /* Responsive */

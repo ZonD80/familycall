@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
 	"familycall/server/internal/config"
 	"familycall/server/internal/models"
@@ -267,6 +268,35 @@ func (h *Handlers) generateToken(userID string) string {
 	return tokenString
 }
 
+// userIDFromToken validates a JWT issued by generateToken and returns its user ID
+func (h *Handlers) userIDFromToken(tokenString string) (string, error) {
+	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		return []byte(h.config.JWTSecret), nil
+	}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}))
+
+	if err != nil || !token.Valid {
+		return "", errors.New("Invalid token")
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", errors.New("Invalid token claims")
+	}
+
+	userID, ok := claims["user_id"].(string)
+	if !ok || userID == "" {
+		return "", errors.New("Invalid user ID in token")
+	}
+
+	// Tokens of deleted users are revoked
+	var count int64
+	if err := h.db.Model(&models.User{}).Where("id = ?", userID).Count(&count).Error; err != nil || count == 0 {
+		return "", errors.New("User not found")
+	}
+
+	return userID, nil
+}
+
 func (h *Handlers) AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := c.GetHeader("Authorization")
@@ -281,26 +311,9 @@ func (h *Handlers) AuthMiddleware() gin.HandlerFunc {
 			tokenString = tokenString[7:]
 		}
 
-		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			return []byte(h.config.JWTSecret), nil
-		})
-
-		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token"})
-			c.Abort()
-			return
-		}
-
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid token claims"})
-			c.Abort()
-			return
-		}
-
-		userID, ok := claims["user_id"].(string)
-		if !ok {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid user ID in token"})
+		userID, err := h.userIDFromToken(tokenString)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
 			c.Abort()
 			return
 		}

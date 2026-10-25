@@ -89,6 +89,12 @@
                         </select>
                     </div>
                     <div class="mobile-menu-item">
+                        <label class="toggle-row" for="ask-before-answer-toggle">
+                            <input type="checkbox" id="ask-before-answer-toggle">
+                            <span data-i18n="ask_before_answering">Ask before answering calls</span>
+                        </label>
+                    </div>
+                    <div class="mobile-menu-item">
                         <span id="mobile-current-username"></span>
                     </div>
                     <div class="mobile-menu-item">
@@ -191,6 +197,11 @@
                         </div>
                     </div>
                     <button id="end-call-btn" class="btn-icon call-btn end-call">📞</button>
+                </div>
+
+                <div class="incoming-call-controls">
+                    <button id="reject-call-btn" class="btn-icon call-btn end-call" data-i18n-title="reject" title="Reject">📞</button>
+                    <button id="accept-call-btn" class="btn-icon call-btn accept-call" data-i18n-title="accept" title="Accept">📞</button>
                 </div>
 
                 <div class="call-info">

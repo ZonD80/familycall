@@ -382,7 +382,7 @@ Contributions are welcome! Please ensure:
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 (GPLv3). See [LICENSE.md](LICENSE.md) for details.
+This project is licensed under the GNU General Public License v3.0 (GPLv3). See [LICENSE](LICENSE) for details.
 
 ## Support
 
