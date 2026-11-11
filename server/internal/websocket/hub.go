@@ -154,7 +154,10 @@ func (h *Hub) Run() {
 		case client := <-h.Unregister:
 			h.clientsMutex.Lock()
 			wasRegistered := false
-			if _, ok := h.clients[client.UserID]; ok {
+			// Only remove the client if it is still the registered one. A connection
+			// that was replaced by a newer one for the same user (e.g. after a
+			// reconnect) must not remove its replacement when it finally closes.
+			if current, ok := h.clients[client.UserID]; ok && current == client {
 				wasRegistered = true
 				delete(h.clients, client.UserID)
 				close(client.Send)
