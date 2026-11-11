@@ -150,6 +150,50 @@ func TestPendingCallsAreDeliveredOnlyOnce(t *testing.T) {
 	}
 }
 
+func TestReplacedClientUnregisterKeepsCurrentClient(t *testing.T) {
+	h, _ := newTestHub(t)
+	bob := newTestClient("bob")
+	h.Register <- bob
+
+	// alice reconnects: the new connection registers before the old one closes
+	oldAlice := newTestClient("alice")
+	newAlice := newTestClient("alice")
+	h.Register <- oldAlice
+	h.Register <- newAlice
+	receivedOfType(t, bob, "user-online")
+
+	h.Unregister <- oldAlice
+
+	send(t, h, Message{Type: "answer", From: "bob", To: "alice"})
+	if got := receivedOfType(t, newAlice, "answer"); len(got) != 1 {
+		t.Fatalf("expected the current connection to receive the answer, got %+v", got)
+	}
+	if got := receivedOfType(t, bob, "user-offline"); len(got) != 0 {
+		t.Fatalf("closing a replaced connection must not mark alice offline, got %+v", got)
+	}
+}
+
+func TestUnregisterAfterSendBufferOverflowDoesNotPanic(t *testing.T) {
+	h, _ := newTestHub(t)
+
+	// alice stops reading: her send buffer fills and the hub drops her
+	stalled := newTestClient("alice")
+	h.Register <- stalled
+	for i := 0; i <= cap(stalled.Send); i++ {
+		send(t, h, Message{Type: "ice-candidate", From: "bob", To: "alice"})
+	}
+
+	// alice reconnects before the stalled connection is unregistered
+	current := newTestClient("alice")
+	h.Register <- current
+	h.Unregister <- stalled
+
+	send(t, h, Message{Type: "answer", From: "bob", To: "alice"})
+	if got := receivedOfType(t, current, "answer"); len(got) != 1 {
+		t.Fatalf("expected the current connection to receive the answer, got %+v", got)
+	}
+}
+
 func TestStampSenderOverridesSpoofedFrom(t *testing.T) {
 	in := []byte(`{"type":"call-accept","from":"mallory-pretends-to-be-alice","to":"bob","data":{"reason":"busy"}}`)
 	out, err := stampSender(in, "mallory")
